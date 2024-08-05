@@ -403,8 +403,8 @@ class BananaBot {
         
         const proxyFile = path.join(__dirname, 'proxy.txt');
         const proxies = fs.readFileSync(proxyFile, 'utf8').split('\n').filter(Boolean);
-		const doQuestsAnswer = await this.askQuestion('Bạn có muốn làm nhiệm vụ không? (y/n): ');
-		const doQuests = doQuestsAnswer.toLowerCase() === 'y';
+		//const doQuestsAnswer = await this.askQuestion('Bạn có muốn làm nhiệm vụ không? (y/n): ');
+		const doQuests = false;
         while (true) {
             let minRemainingTime = Infinity;
     
