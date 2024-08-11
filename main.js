@@ -41,7 +41,7 @@ class BananaBot {
         try {
             const response = await axios.post(`${this.base_url}/login`, loginPayload, { headers: this.headers, httpsAgent: new HttpsProxyAgent(proxy) });
             await this.sleep(1000);
-            console.log("response", response.data)
+
             const responseData = response.data;
             if (responseData.data && responseData.data.token) {
                 return responseData.data.token;
@@ -76,11 +76,14 @@ class BananaBot {
     async doClick(clickCount, proxy) {
         const clickPayload = { clickCount: clickCount };
         try {
-            return await axios.post(`${this.base_url}/do_click`, clickPayload, { headers: this.headers, httpsAgent: new HttpsProxyAgent(proxy) });
+            const response = await axios.post(`${this.base_url}/do_click`, clickPayload, { headers: this.headers, httpsAgent: new HttpsProxyAgent(proxy) });
+            return response.data;
         } catch (error) {
             this.log('Lỗi khi tap: ' + error.message);
+            return null;
         }
     }
+    
 
     async getLotteryInfo(proxy) {
         try {
@@ -186,6 +189,37 @@ class BananaBot {
         }));
     }
 
+    async doSpeedup(proxy, maxSpeedups = 3) {
+        let speedupsPerformed = 0;
+        while (speedupsPerformed < maxSpeedups) {
+            try {
+                const response = await axios.post(`${this.base_url}/do_speedup`, {}, { headers: this.headers, httpsAgent: new HttpsProxyAgent(proxy) });
+                if (response.data.code === 0) {
+                    const speedupCount = response.data.data.speedup_count;
+                    const lotteryInfo = response.data.data.lottery_info;
+                    speedupsPerformed++;
+                    this.log(colors.green(`Speedup thành công! Còn lại ${speedupCount} lần speedup. Đã thực hiện ${speedupsPerformed}/${maxSpeedups} lần.`));
+    
+                    if (lotteryInfo.countdown_end === true) {
+                        this.log(colors.yellow('Countdown kết thúc. Đang claim lottery...'));
+                        await this.claimLottery(proxy);
+                    }
+    
+                    if (speedupCount === 0 || speedupsPerformed >= maxSpeedups) {
+                        this.log(colors.yellow(`Đã hết lượt speedup hoặc đạt giới hạn ${maxSpeedups} lần.`));
+                        return lotteryInfo;
+                    }
+                } else {
+                    this.log(colors.red('Speedup thất bại!'));
+                    return null;
+                }
+            } catch (error) {
+                this.log('Lỗi khi thực hiện speedup: ' + error.message);
+                return null;
+            }
+        }
+    }
+
 	async processAccount(queryId, proxy, isFirstAccount = false, doQuests) {
         let remainingTimeMinutes = Infinity;
         const token = await this.login(queryId, proxy);
@@ -206,9 +240,11 @@ class BananaBot {
                 const todayClickCount = userInfo.today_click_count || 0;
                 const maxClickCount = userInfo.max_click_count || 0;
                 const currentEquipBananaId = userInfo.equip_banana_id || 0;
+                const speedup = userInfo.speedup_count || 0;
     
                 this.log(colors.green(`Balance : ${colors.white(peel)}`));
                 this.log(colors.green(`USDT : ${colors.white(usdt)}`));
+                this.log(colors.green(`Speed Up : ${colors.white(speedup)}`));
                 this.log(colors.green(`Hôm nay đã tap : ${colors.white(todayClickCount)} lần`));
     
                 await this.equipBestBanana(currentEquipBananaId, proxy);
@@ -217,7 +253,7 @@ class BananaBot {
                     const lotteryInfoResponse = await this.getLotteryInfo(proxy);
                     await this.sleep(1000);
                     const lotteryInfoData = lotteryInfoResponse.data;
-    
+                    let remainLotteryCount = (lotteryInfoData.data || {}).remain_lottery_count || 0;
                     remainingTimeMinutes = this.calculateRemainingTime(lotteryInfoData.data || {});
     
                     if (remainingTimeMinutes <= 0) {
@@ -227,9 +263,19 @@ class BananaBot {
                         const updatedLotteryInfoResponse = await this.getLotteryInfo(proxy);
                         await this.sleep(1000);
                         const updatedLotteryInfoData = updatedLotteryInfoResponse.data;
+                        remainLotteryCount = (updatedLotteryInfoData.data || {}).remain_lottery_count || 0;
                         remainingTimeMinutes = this.calculateRemainingTime(updatedLotteryInfoData.data || {});
                     }
     
+                    if (speedup > 0) {
+                        const maxSpeedups = speedup > 3 ? 3 : speedup;
+                        this.log(colors.yellow(`Thực hiện speedup tối đa ${maxSpeedups} lần...`));
+                        const speedupLotteryInfo = await this.doSpeedup(proxy, maxSpeedups);
+                        if (speedupLotteryInfo) {
+                            remainingTimeMinutes = this.calculateRemainingTime(speedupLotteryInfo);
+                        }
+                    }
+
                     const remainingDuration = Duration.fromMillis(remainingTimeMinutes * 60 * 1000);
                     const remainingHours = Math.floor(remainingDuration.as('hours'));
                     const remainingMinutes = Math.floor(remainingDuration.as('minutes')) % 60;
@@ -237,7 +283,6 @@ class BananaBot {
     
                     this.log(colors.yellow(`Thời gian còn lại để nhận Banana: ${remainingHours} Giờ ${remainingMinutes} phút ${remainingSeconds} giây`));
     
-					const remainLotteryCount = (lotteryInfoData.data || {}).remain_lottery_count || 0;
 					this.log(colors.yellow(`Harvest Có Sẵn : ${colors.white(remainLotteryCount)}`));
 					if (remainLotteryCount > 0) {
 						this.log('Bắt đầu harvest...');
@@ -269,13 +314,55 @@ class BananaBot {
                 if (todayClickCount < maxClickCount) {
                     const clickCount = maxClickCount - todayClickCount;
                     if (clickCount > 0) {
-                        this.log(colors.magenta(`Đã tap ${clickCount} lần...`));
-                        await this.doClick(clickCount, proxy);
-                        await this.sleep(1000);
+                        this.log(colors.magenta(`Bạn có ${clickCount} lần tap...`));
+                        
+                        const parts = [];
+                        let remaining = clickCount;
+                        for (let i = 0; i < 9; i++) {
+                            const part = Math.floor(Math.random() * (remaining / (10 - i))) * 2;
+                            parts.push(part);
+                            remaining -= part;
+                        }
+                        parts.push(remaining); 
+                        
+                        for (const part of parts) {
+                            this.log(colors.magenta(`Đang tap ${part} lần...`));
+                            const response = await this.doClick(part, proxy);
+                            if (response && response.code === 0) {
+                                const peel = response.data.peel || 0;
+                                const speedup = response.data.speedup || 0;
+                                this.log(colors.magenta(`Nhận được ${peel} Peel, ${speedup} Speedup...`));
+                            } else {
+                                this.log(colors.red(`Lỗi khi tap ${part} lần.`));
+                            }
+                            await this.sleep(1000);
+                        }
+                
+                        const userInfoResponse = await axios.get(`${this.base_url}/get_user_info`, { headers: this.headers, httpsAgent: new HttpsProxyAgent(proxy) });
+                        const userInfo = userInfoResponse.data.data || {};
+                        const updatedSpeedup = userInfo.speedup_count || 0;
+                
+                        if (updatedSpeedup > 0) {
+                            this.log(colors.yellow(`Thực hiện speedup, bạn có ${updatedSpeedup} lần...`));
+                            const speedupLotteryInfo = await this.doSpeedup(proxy);
+                            if (speedupLotteryInfo) {
+                                remainingTimeMinutes = this.calculateRemainingTime(speedupLotteryInfo);
+                            }
+                        }
+                
+                        const remainingDuration = Duration.fromMillis(remainingTimeMinutes * 60 * 1000);
+                        const remainingHours = Math.floor(remainingDuration.as('hours'));
+                        const remainingMinutes = Math.floor(remainingDuration.as('minutes')) % 60;
+                        const remainingSeconds = Math.floor(remainingDuration.as('seconds')) % 60;
+                
+                        this.log(colors.yellow(`Thời gian còn lại để nhận Banana: ${remainingHours} Giờ ${remainingMinutes} phút ${remainingSeconds} giây`));
                     } else {
-                        console.log(colors.red('Không thể tap, đã đạt giới hạn tối đa!'));
+                        this.log(colors.red('Không thể tap, đã đạt giới hạn tối đa!'));
                     }
-                }
+                } else {
+                    this.log(colors.red('Không thể tap, đã đạt giới hạn tối đa!'));
+                }        
+                
 				if (doQuests) {
 
 					try {
@@ -403,8 +490,8 @@ class BananaBot {
         
         const proxyFile = path.join(__dirname, 'proxy.txt');
         const proxies = fs.readFileSync(proxyFile, 'utf8').split('\n').filter(Boolean);
-		//const doQuestsAnswer = await this.askQuestion('Bạn có muốn làm nhiệm vụ không? (y/n): ');
-		const doQuests = false;
+		const doQuestsAnswer = 'y';
+		const doQuests = doQuestsAnswer.toLowerCase() === 'y';
         while (true) {
             let minRemainingTime = Infinity;
     
